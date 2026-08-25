@@ -36,7 +36,10 @@ bench: ## Run benchmarks
 	go test ./internal/render/ -bench . -benchtime 5x -run '^$$'
 
 .PHONY: lint
-lint: ## Run golangci-lint
+lint: ## Verify the lint config, then run golangci-lint
+	# `config verify` first, because `run` is more permissive than the schema:
+	# it accepts settings that CI's golangci-lint-action rejects outright.
+	golangci-lint config verify
 	golangci-lint run ./...
 
 .PHONY: fmt

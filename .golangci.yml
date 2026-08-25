@@ -50,7 +50,24 @@ linters:
       min-occurrences: 5
       # These are wire-protocol field names, not magic strings; extracting them
       # to constants reads worse, not better.
-      ignore-string-values: "apiVersion|kind|name|namespace|spec|status|metadata|annotations|composite|crossplane|default|json|yaml"
+      #
+      # Must be a list, not one pipe-delimited string: `golangci-lint run`
+      # accepts a string, but `golangci-lint config verify` -- which the GitHub
+      # action runs first -- rejects it against the schema.
+      ignore-string-values:
+        - apiVersion
+        - kind
+        - name
+        - namespace
+        - spec
+        - status
+        - metadata
+        - annotations
+        - composite
+        - crossplane
+        - default
+        - json
+        - yaml
 
     gocritic:
       enabled-tags:
