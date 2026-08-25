@@ -74,7 +74,7 @@ func TestCLIParsesArgs(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			var c cli
-			parser, err := kong.New(&c, kong.Name("crossplane-render"), kong.Exit(func(int) {}))
+			parser, err := kong.New(&c, kong.Name("crossplane-postrender"), kong.Exit(func(int) {}))
 			if err != nil {
 				t.Fatalf("kong.New(...): unexpected error: %v", err)
 			}
@@ -114,7 +114,7 @@ func TestCLIReadsEnv(t *testing.T) {
 	t.Setenv("CROSSPLANE_RENDER_VERBOSE", "true")
 
 	var c cli
-	parser, err := kong.New(&c, kong.Name("crossplane-render"), kong.Exit(func(int) {}))
+	parser, err := kong.New(&c, kong.Name("crossplane-postrender"), kong.Exit(func(int) {}))
 	if err != nil {
 		t.Fatalf("kong.New(...): unexpected error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestCLIFlagBeatsEnv(t *testing.T) {
 	t.Setenv("CROSSPLANE_DOCKER_NETWORK", "env-net")
 
 	var c cli
-	parser, err := kong.New(&c, kong.Name("crossplane-render"), kong.Exit(func(int) {}))
+	parser, err := kong.New(&c, kong.Name("crossplane-postrender"), kong.Exit(func(int) {}))
 	if err != nil {
 		t.Fatalf("kong.New(...): unexpected error: %v", err)
 	}

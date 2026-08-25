@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install the crossplane-render post-renderer binary from a GitHub release.
+# Install the crossplane-postrender post-renderer binary from a GitHub release.
 #
 #   # latest release, into ./bin
 #   curl -fsSL https://raw.githubusercontent.com/jcogilvie/crossplane-helm-postrender/main/install.sh | bash
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 readonly REPO="jcogilvie/crossplane-helm-postrender"
-readonly BINARY="crossplane-render"
+readonly BINARY="crossplane-postrender"
 
 VERSION="${VERSION:-latest}"
 BIN_DIR="${BIN_DIR:-./bin}"

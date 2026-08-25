@@ -53,13 +53,13 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          name="crossplane-render_${{ steps.version.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          name="crossplane-postrender_${{ steps.version.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}"
           mkdir -p dist
           go build \
             -trimpath \
             -ldflags "-s -w -X github.com/jcogilvie/crossplane-helm-postrender/internal/version.version=${{ steps.version.outputs.version }}" \
-            -o "dist/${name}/crossplane-render" \
-            ./cmd/crossplane-render
+            -o "dist/${name}/crossplane-postrender" \
+            ./cmd/crossplane-postrender
           cp LICENSE README.md "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           rm -rf "dist/${name}"

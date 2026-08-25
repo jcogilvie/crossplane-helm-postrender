@@ -2,7 +2,7 @@
 # a one-liner you can run directly -- but it documents the canonical invocations
 # and keeps CI and local runs using the same flags.
 
-BINARY      := crossplane-render
+BINARY      := crossplane-postrender
 BIN_DIR     := bin
 MODULE      := github.com/jcogilvie/crossplane-helm-postrender
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo devel)

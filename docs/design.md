@@ -1,6 +1,6 @@
 # Design
 
-This document describes how `crossplane-render` is put together, why it's
+This document describes how `crossplane-postrender` is put together, why it's
 structured the way it is, and three behaviors that are easy to get wrong and
 were each found by diffing output against `crossplane render` -- not by
 reading documentation. If you're changing `internal/render` or
@@ -11,20 +11,20 @@ of them.
 ## Package layout
 
 ```
-cmd/crossplane-render/   CLI entrypoint (kong-based argument parsing, stdin/stdout wiring)
+cmd/crossplane-postrender/   CLI entrypoint (kong-based argument parsing, stdin/stdout wiring)
 internal/parse/          Classifies an input YAML stream into typed render inputs
 internal/render/         Drives the crossplane CLI's render engine against classified inputs
 internal/version/        Reports the build version
 ```
 
-### `cmd/crossplane-render`
+### `cmd/crossplane-postrender`
 
 `main.go` owns exactly two responsibilities: parsing CLI flags (via
 [`kong`](https://github.com/alecthomas/kong)) and wiring `os.Stdin`/
 `os.Stdout` to the `cli.Run()` method that does the actual work. `Run()`
 takes `Stdin`/`Stdout` as struct fields rather than reading the globals
 directly, specifically so tests can inject `strings.Reader`s and buffers
-without touching process-wide state (`cmd/crossplane-render/main_test.go`
+without touching process-wide state (`cmd/crossplane-postrender/main_test.go`
 exercises this directly).
 
 The one config decision that lives here rather than in `internal/render`:
@@ -92,7 +92,7 @@ going to be used.
 
 ## Why in-process rather than shelling out
 
-`crossplane-render` imports the crossplane CLI's render packages as a Go
+`crossplane-postrender` imports the crossplane CLI's render packages as a Go
 library dependency and calls them directly, rather than exec'ing a separately
 installed `crossplane` binary and parsing its stdout/stderr.
 [`crossplane-diff`](https://github.com/crossplane-contrib/crossplane-diff)
@@ -106,7 +106,7 @@ takes the same approach for the same two reasons:
 2. **Speed, structurally.** Helm invokes a post-renderer once per render --
    and `helm unittest` invokes the post-renderer process once per *test
    case* in a suite that specifies one. Per-invocation overhead (process
-   startup for `crossplane-render` itself, but especially engine and
+   startup for `crossplane-postrender` itself, but especially engine and
    Function-container setup) dominates the actual render cost for a
    realistic composition. In-process rendering doesn't add CLI-subprocess
    startup on top of that, and -- more importantly -- it makes engine and
@@ -135,15 +135,15 @@ sync.
 **The structural limitation, stated plainly: `BatchRenderer.RenderAll` is not
 reachable from `helm template` or `helm unittest`.** Helm's post-renderer
 contract is one process, one input stream, one output stream -- Helm starts
-a fresh `crossplane-render` process for every render it wants post-processed,
+a fresh `crossplane-postrender` process for every render it wants post-processed,
 and each process has no way to know about, or share state with, any other
 invocation. There is no flag or protocol by which Helm could hand
-`crossplane-render` "here are ten streams, batch them" -- the contract simply
+`crossplane-postrender` "here are ten streams, batch them" -- the contract simply
 doesn't have a slot for that. `BatchRenderer` therefore exists purely for
 in-process Go callers that own their own render loop and are not bound by
 Helm's contract: a custom test harness that wants to render many chart
 variants in one process, for example. If you're tempted to expose
-`RenderAll` through the `crossplane-render` binary's CLI to "fix" this
+`RenderAll` through the `crossplane-postrender` binary's CLI to "fix" this
 limitation, the fix has to happen on Helm's side of the contract, not this
 tool's -- there's no stdin/stdout protocol that lets one post-renderer
 process render more than the one stream Helm handed it.

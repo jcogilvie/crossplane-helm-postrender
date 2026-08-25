@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Command crossplane-render is a Helm post-renderer that renders Crossplane
+// Command crossplane-postrender is a Helm post-renderer that renders Crossplane
 // compositions.
 //
 // It reads a rendered manifest stream on stdin and writes the composed resources
@@ -67,7 +67,7 @@ type cli struct {
 func main() {
 	c := &cli{}
 	ctx := kong.Parse(c,
-		kong.Name("crossplane-render"),
+		kong.Name("crossplane-postrender"),
 		kong.Description("Helm post-renderer that renders Crossplane compositions."),
 		kong.UsageOnError(),
 		kong.Vars{"version": version.Get()},

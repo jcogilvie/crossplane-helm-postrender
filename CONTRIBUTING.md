@@ -140,7 +140,7 @@ don't paraphrase it.
 1. Fork and branch from `main`.
 2. Make your change. If it touches render behavior -- anything in
    `internal/render` or `internal/parse`, or how the CLI in
-   `cmd/crossplane-render` wires them together -- **add a test that would
+   `cmd/crossplane-postrender` wires them together -- **add a test that would
    fail without the change**. This is the project's actual bar for "done";
    a behavior change with no corresponding test is not reviewable as
    correct, only as plausible.

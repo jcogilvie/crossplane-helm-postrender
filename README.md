@@ -11,7 +11,7 @@ composition pipeline itself unverified: the actual `Bucket`, `Instance`,
 `RolePolicyAttachment`, or whatever the composition produces never appears in
 a test assertion, because `helm template` and `helm unittest` stop at the XR.
 
-`crossplane-render` closes that gap. It is a Helm post-renderer -- a
+`crossplane-postrender` closes that gap. It is a Helm post-renderer -- a
 program that reads a rendered manifest stream on stdin and writes a modified
 stream to stdout, per [Helm's post-rendering contract][helm-postrender]. This
 one takes the XR, Composition, and Function packages a chart renders, feeds
@@ -29,12 +29,12 @@ arbitrary post-renderer per test suite.
 ## Installation
 
 ```bash
-go install github.com/jcogilvie/crossplane-helm-postrender/cmd/crossplane-render@latest
+go install github.com/jcogilvie/crossplane-helm-postrender/cmd/crossplane-postrender@latest
 ```
 
 Prebuilt release binaries and an `install.sh` script are also on the way; once
 published, they'll be linked from this section. Until then, `go install` (or a
-manual `go build ./cmd/crossplane-render`) is the supported path.
+manual `go build ./cmd/crossplane-postrender`) is the supported path.
 
 ## Prerequisites
 
@@ -48,10 +48,15 @@ manual `go build ./cmd/crossplane-render`) is the supported path.
   docker network create crossplane-render
   ```
 
-  `crossplane-render` tells the render engine which network to join rather than
+  `crossplane-postrender` tells the render engine which network to join rather than
   letting it create a per-invocation one, so the network must already exist. The
   default name is `crossplane-render`; override it with `--docker-network` (see
   [Configuration](#configuration)).
+
+  Note the network default is deliberately named after the *render engine*, not
+  after this binary: the network is shared with the crossplane render engine and
+  its function containers, and any containers left behind by a previous render are
+  attached to it. Keeping the name stable is what lets those containers be reused.
 
   This also matters for reuse. Since crossplane CLI v2.4.0, an engine that sees a
   `render.crossplane.io/runtime-docker-network` annotation on a Function joins
@@ -60,7 +65,7 @@ manual `go build ./cmd/crossplane-render`) is the supported path.
   [Reusing function containers](#reusing-function-containers)), point
   `--docker-network` at the same network so the engine and the reused containers
   can reach each other.
-- **No `crossplane` CLI install required.** `crossplane-render` drives the
+- **No `crossplane` CLI install required.** `crossplane-postrender` drives the
   crossplane CLI's render packages in-process (as a Go library dependency),
   rather than shelling out to a `crossplane` binary. There's nothing to
   install beyond the Go module itself and Docker.
@@ -74,12 +79,12 @@ Function package, and an `XBucket` XR with API group `platform.example.org`:
 docker network create crossplane-render   # once, if it doesn't already exist
 
 helm template example-chart ./example-chart \
-  --post-renderer crossplane-render \
+  --post-renderer crossplane-postrender \
   --post-renderer-args platform.example.org
 ```
 
 The API group domain (`platform.example.org` above) is a **required**
-positional argument. It's how `crossplane-render` tells the XR it's supposed
+positional argument. It's how `crossplane-postrender` tells the XR it's supposed
 to render apart from every other document in the stream -- a document whose
 `apiVersion` contains that substring is the XR. Get it wrong and the tool
 fails with an explicit "no XR found with API group domain" error rather than
@@ -99,29 +104,29 @@ executable (resolved via `$PATH` if it contains no separator).
 
 **Helm v4 changed this.** `--post-renderer` now takes the name of a
 *registered plugin*, not a path -- pointing it directly at the
-`crossplane-render` binary fails with `plugin: {Name:... Type:postrenderer/v1}
+`crossplane-postrender` binary fails with `plugin: {Name:... Type:postrenderer/v1}
 not found`. You must first register it as a `postrenderer/v1` plugin:
 
 ```bash
-mkdir -p crossplane-render-plugin
-cat > crossplane-render-plugin/plugin.yaml <<'EOF'
+mkdir -p crossplane-postrender-plugin
+cat > crossplane-postrender-plugin/plugin.yaml <<'EOF'
 apiVersion: v1
 type: postrenderer/v1
-name: crossplane-render
+name: crossplane-postrender
 version: 0.1.0
 runtime: subprocess
 runtimeConfig:
   platformCommand:
-    - command: crossplane-render
+    - command: crossplane-postrender
 EOF
-helm plugin install crossplane-render-plugin/
+helm plugin install crossplane-postrender-plugin/
 ```
 
 Then invoke it by plugin name, exactly as in the Helm v3 example above:
 
 ```bash
 helm template example-chart ./example-chart \
-  --post-renderer crossplane-render \
+  --post-renderer crossplane-postrender \
   --post-renderer-args platform.example.org
 ```
 
@@ -144,7 +149,7 @@ templates:
   - templates/xbucket_xrd.yaml
   - templates/functions.yaml
 postRenderer:
-  cmd: crossplane-render
+  cmd: crossplane-postrender
   args:
     - platform.example.org
 tests:
@@ -160,7 +165,7 @@ tests:
 ```
 
 helm-unittest renders every listed template, then pipes the whole stream
-through `crossplane-render` before assertions run -- so `templates:` must list
+through `crossplane-postrender` before assertions run -- so `templates:` must list
 the XRD, Composition, and Function manifests alongside the XR, or the render
 engine will be missing an input it needs (see [How it works](#how-it-works)
 below). Assertions then run against the *composed* resources the pipeline
@@ -180,7 +185,7 @@ Flags always take precedence over their corresponding environment variable.
 
 ## How it works
 
-`crossplane-render` reads the entire input stream, classifies every document,
+`crossplane-postrender` reads the entire input stream, classifies every document,
 and feeds the classified inputs to the crossplane CLI's render engine:
 
 | Document | How it's identified | Feeds into |
@@ -209,7 +214,7 @@ block scalar, and that block scalar can itself contain a literal `---` --
 which a naive line-oriented splitter would treat as a document boundary and
 use to corrupt the composition in half.
 
-`crossplane-render` accepts the input stream in any of three shapes, since it
+`crossplane-postrender` accepts the input stream in any of three shapes, since it
 runs as either a `helm template` post-renderer or a helm-unittest
 post-renderer, and the two produce different provenance markers:
 
@@ -220,7 +225,7 @@ post-renderer, and the two produce different provenance markers:
    bare `---` separators and no comment marker at all. Helm v4 stamps this
    annotation on every document handed to a `postrenderer/v1` plugin.
 
-Once classified, `crossplane-render` drives the crossplane CLI's render
+Once classified, `crossplane-postrender` drives the crossplane CLI's render
 engine in-process -- it imports
 [`github.com/crossplane/cli/v2/cmd/crossplane/render`][cli-render] as a Go
 library, rather than shelling out to a separately-installed `crossplane`
@@ -257,10 +262,29 @@ spec:
 lets the next render find and reuse it rather than starting a fresh one. This is
 the single largest lever on suite wall-clock time.
 
-Containers left running this way are yours to clean up:
+**The annotation and `--docker-network` must name the same network.** If they
+disagree, the engine joins one network while the reusable containers sit on
+another, and the failure is indirect enough to be hard to place:
+
+```
+cannot run Composition pipeline step "...": rpc error:
+  code = DeadlineExceeded desc = ... produced zero addresses
+```
+
+That is the engine failing to resolve a Function it cannot reach — not a problem
+with the Composition. A missing network is clearer (`network ... not found`), but
+a *mismatched* one produces the message above. If you see it, check both names
+agree before looking anywhere else.
+
+Containers left running this way are yours to clean up. Note the filter matches
+whatever suffix your `runtime-docker-name` annotations use, so adjust it —
+and be deliberate, since removing them forfeits the reuse they exist for:
 
 ```bash
-docker ps --filter 'name=-render' --format '{{.Names}}'
+# Inspect first.
+docker ps --filter 'name=-render' --format '{{.Names}}\t{{.Status}}\t{{.Networks}}'
+
+# Then remove, if you actually want a cold start next run.
 docker ps -aq --filter 'name=-render' | xargs -r docker rm -f
 ```
 
@@ -269,14 +293,14 @@ docker ps -aq --filter 'name=-render' | xargs -r docker rm -f
 - **Docker is mandatory.** There is no mock-engine or Docker-less mode for the
   CLI entrypoint. (The test suite uses the crossplane CLI's `MockEngine` to
   test classification and orchestration without Docker, but that mock is not
-  exposed to `crossplane-render`'s own users.)
+  exposed to `crossplane-postrender`'s own users.)
 - **Helm's contract limits how much invocation overhead can be removed.**
   Internally, the render engine supports batching many streams through one
   shared engine and function-runtime environment (`BatchRenderer.RenderAll`),
   which amortizes engine setup and container startup across every render
   instead of paying that cost per stream. But Helm's post-renderer contract is
   strictly one stream in, one process, one stream out -- there is no way for
-  the `crossplane-render` binary itself to batch across the many separate
+  the `crossplane-postrender` binary itself to batch across the many separate
   `helm unittest` invocations a large test suite makes, because each
   invocation is a distinct process that knows nothing about the others.
   `BatchRenderer` exists for in-process Go callers that own their own render
@@ -284,7 +308,7 @@ docker ps -aq --filter 'name=-render' | xargs -r docker rm -f
   one-process-per-render contract; it is not something `helm template` or
   `helm unittest` can reach.
 - **Helm v3 and v4 differ in how the post-renderer is invoked**, not in what
-  `crossplane-render` does once invoked. See [Helm v3 vs. Helm
+  `crossplane-postrender` does once invoked. See [Helm v3 vs. Helm
   v4](#helm-v3-vs-helm-v4) above.
 - **Unroutable documents are dropped, not rejected.** A stray `ConfigMap` or
   any other manifest that doesn't match a known kind and isn't the XR is
@@ -297,7 +321,7 @@ docker ps -aq --filter 'name=-render' | xargs -r docker rm -f
   containers across renders (the difference between a test suite that takes
   minutes and one that takes an hour) requires annotating each `Function`
   manifest with a stable `render.crossplane.io/runtime-docker-name` and
-  `render.crossplane.io/runtime-docker-cleanup: Orphan`. `crossplane-render`
+  `render.crossplane.io/runtime-docker-cleanup: Orphan`. `crossplane-postrender`
   does not add these annotations for you; they belong on the Function
   manifests your chart templates.
 

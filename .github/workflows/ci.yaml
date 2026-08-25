@@ -110,4 +110,4 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -o /dev/null ./cmd/crossplane-render
+        run: go build -o /dev/null ./cmd/crossplane-postrender
