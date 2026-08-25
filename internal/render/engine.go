@@ -322,63 +322,87 @@ func (e *engineRenderer) renderOne(ctx context.Context, eng render.Engine, p *co
 	return res, nil
 }
 
-// compositeFrom converts the classified XR into the engine's composite type.
-func compositeFrom(d *parse.Document) (*ucomposite.Unstructured, error) {
-	xr := ucomposite.New()
-	if err := yaml.Unmarshal(d.Raw, xr); err != nil {
-		return nil, errors.Wrap(err, "cannot parse composite resource")
+// decodeDocument unmarshals one document into a new T.
+//
+// The crossplane CLI ships equivalents of these decoders -- render.LoadFunctions,
+// LoadComposition, LoadXRD, LoadCompositeResource and friends -- but every one
+// takes (afero.Fs, path) and reads from a file. We hold per-document bytes
+// already split out of a single stdin stream, so using them would mean writing
+// those bytes back out to a filesystem purely to have the library read and parse
+// them again: the temp-file round-trip that rendering in-process exists to avoid.
+// These helpers are the bytes-shaped counterpart of a path-shaped API, not a
+// reimplementation of it.
+//
+// `newT` supplies the zero value because some target types need a constructor
+// rather than a zero struct: composite.New() and composed.New() initialise the
+// embedded Object map, and unmarshalling into an uninitialised one fails.
+//
+// `what` names the kind in error messages. Errors always name the source
+// document, since a parse failure on one document in a stream is otherwise very
+// hard to place.
+func decodeDocument[T any](d *parse.Document, what string, newT func() *T) (*T, error) {
+	out := newT()
+	if err := yaml.Unmarshal(d.Raw, out); err != nil {
+		return nil, errors.Wrapf(err, "cannot parse %s from %s", what, sourceOf(d))
 	}
-	return xr, nil
+	return out, nil
 }
 
-// xrdFrom decodes an XRD into its typed form, which ApplyXRDDefaults requires
-// in order to derive the CRD schema.
+// decodeDocuments decodes every document in a slice, dereferencing the results.
+func decodeDocuments[T any](docs []parse.Document, what string, newT func() *T) ([]T, error) {
+	out := make([]T, 0, len(docs))
+	for i := range docs {
+		v, err := decodeDocument(&docs[i], what, newT)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, nil
+}
+
+// zeroOf adapts a plain struct type to decodeDocument's constructor parameter.
+func zeroOf[T any]() *T { return new(T) }
+
+// compositeFrom decodes the XR. composite.New initialises the embedded Object
+// map, which unmarshalling requires.
+func compositeFrom(d *parse.Document) (*ucomposite.Unstructured, error) {
+	return decodeDocument(d, "composite resource", func() *ucomposite.Unstructured {
+		return ucomposite.New()
+	})
+}
+
+// xrdFrom decodes an XRD into its typed form, which ApplyXRDDefaults requires in
+// order to derive the CRD schema.
 //
 // Note this is the one place a typed XRD decode is unavoidable. Matching still
 // uses unstructured accessors, because the apiserver round-trips XRDs through
 // v1<->v2 conversion and the document's own apiVersion cannot be trusted.
 func xrdFrom(d *parse.Document) (*apiextensionsv1.CompositeResourceDefinition, error) {
-	xrd := &apiextensionsv1.CompositeResourceDefinition{}
-	if err := yaml.Unmarshal(d.Raw, xrd); err != nil {
-		return nil, errors.Wrapf(err, "cannot parse XRD from %s", sourceOf(d))
-	}
-	return xrd, nil
+	return decodeDocument(d, "XRD", zeroOf[apiextensionsv1.CompositeResourceDefinition])
 }
 
 // compositionFrom decodes the Composition into its typed form, which the engine
 // requires (unlike the other inputs, it is not passed as unstructured).
 func compositionFrom(d *parse.Document) (*apiextensionsv1.Composition, error) {
-	comp := &apiextensionsv1.Composition{}
-	if err := yaml.Unmarshal(d.Raw, comp); err != nil {
-		return nil, errors.Wrap(err, "cannot parse Composition")
-	}
-	return comp, nil
+	return decodeDocument(d, "Composition", zeroOf[apiextensionsv1.Composition])
 }
 
 // functionsFrom decodes Function packages.
+//
+// A v1beta1 Function decodes into the v1 type without loss: both FunctionSpecs
+// are structurally identical, embedding only PackageSpec and PackageRuntimeSpec.
+// The CLI's own LoadFunctions accepts both apiVersions for the same reason.
 func functionsFrom(docs []parse.Document) ([]pkgv1.Function, error) {
-	out := make([]pkgv1.Function, 0, len(docs))
-	for i := range docs {
-		fn := pkgv1.Function{}
-		if err := yaml.Unmarshal(docs[i].Raw, &fn); err != nil {
-			return nil, errors.Wrapf(err, "cannot parse Function from %s", sourceOf(&docs[i]))
-		}
-		out = append(out, fn)
-	}
-	return out, nil
+	return decodeDocuments(docs, "Function", zeroOf[pkgv1.Function])
 }
 
-// observedFrom decodes test-injected observed composed resources.
+// observedFrom decodes test-injected observed composed resources. composed.New
+// initialises the embedded Object map, which unmarshalling requires.
 func observedFrom(docs []parse.Document) ([]composed.Unstructured, error) {
-	out := make([]composed.Unstructured, 0, len(docs))
-	for i := range docs {
-		cd := composed.New()
-		if err := yaml.Unmarshal(docs[i].Raw, cd); err != nil {
-			return nil, errors.Wrapf(err, "cannot parse observed resource from %s", sourceOf(&docs[i]))
-		}
-		out = append(out, *cd)
-	}
-	return out, nil
+	return decodeDocuments(docs, "observed resource", func() *composed.Unstructured {
+		return composed.New()
+	})
 }
 
 // unstructuredFrom collects already-parsed documents for the required-resources
