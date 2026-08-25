@@ -1,0 +1,95 @@
+version: "2"
+
+# Modelled on crossplane-contrib/crossplane-diff, so code here reads like the
+# Crossplane ecosystem it integrates with. Deviations are noted inline.
+linters:
+  default: all
+
+  disable:
+    # Not idiomatic to enforce a hard line limit in Go; prefer linting the things
+    # that cause long lines (too many parameters, deep nesting).
+    - lll
+    # Whitespace-forcing linters; not a widely accepted Go best practice.
+    - wsl
+    - wsl_v5
+    - nlreturn
+    # Readability over micro-optimisation unless a profile says otherwise.
+    - perfsprint
+    # Stricter than we need -- not every error warrants a sentinel value.
+    - err113
+    # Duplicates gocognit, which stays enabled, using a different formula.
+    - gocyclo
+    - cyclop
+    - nestif
+    - funlen
+    - maintidx
+    # TODO comments are an accepted way to track minor cleanups.
+    - godox
+    # Would fire on every case where returning an interface is the point.
+    - ireturn
+    # Partially-populated structs are the norm in table-driven tests, where
+    # omitting a field is how "not relevant to this case" is expressed.
+    - exhaustruct
+    - exhaustruct_v5
+    - dupl
+    - mnd
+    - nonamedreturns
+    - depguard
+    # Inline `if err := ...; err != nil` is standard, widely-read Go.
+    - noinlineerr
+    # Aspirational: worth enabling once the package set settles.
+    - wrapcheck
+    - varnamelen
+    - testpackage
+    - paralleltest
+    - nilnil
+
+  settings:
+    goconst:
+      min-len: 3
+      min-occurrences: 5
+      # These are wire-protocol field names, not magic strings; extracting them
+      # to constants reads worse, not better.
+      ignore-string-values: "apiVersion|kind|name|namespace|spec|status|metadata|annotations|composite|crossplane|default|json|yaml"
+
+    gocritic:
+      enabled-tags:
+        - performance
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    rules:
+      # Tests legitimately ignore errors, assert types, and repeat literals.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - forcetypeassert
+          - goconst
+          - gochecknoglobals
+          - gocognit
+          - gosec
+          - unparam
+          - containedctx
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+
+  settings:
+    gci:
+      # stdlib -> third party -> crossplane-runtime -> crossplane -> local
+      custom-order: true
+      sections:
+        - standard
+        - default
+        - prefix(github.com/crossplane/crossplane-runtime)
+        - prefix(github.com/crossplane/crossplane)
+        - prefix(github.com/crossplane/cli)
+        - prefix(github.com/jcogilvie/crossplane-helm-postrender)
+    gofmt:
+      simplify: true
