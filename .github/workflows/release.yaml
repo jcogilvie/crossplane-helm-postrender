@@ -101,17 +101,46 @@ jobs:
           echo
           cat dist/checksums.txt
 
-      - name: Create release
+      # Attach the artifacts to the release, creating it only if it does not
+      # already exist.
+      #
+      # Both orderings have to work, because either can happen:
+      #
+      #   - Cutting a release in the GitHub UI creates the tag *and* the release
+      #     object, and the resulting tag push triggers this workflow. The release
+      #     already exists by the time we get here, so `gh release create` fails
+      #     with "a release with the same tag name already exists" -- and the
+      #     built binaries never get attached, leaving a release with no assets.
+      #   - Pushing a bare tag (`git push origin v1.2.3`) triggers this workflow
+      #     with no release object, so one has to be created.
+      #
+      # Upload-if-present, create-if-absent handles both, and makes re-running the
+      # job safe: `--clobber` replaces assets rather than failing on a name that
+      # is already there.
+      - name: Publish release artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.tag || github.ref_name }}
         run: |
-          # --generate-notes builds the changelog from merged PRs. --verify-tag
-          # refuses to invent a tag that does not exist, which makes a mistyped
-          # workflow_dispatch input fail loudly instead of publishing something odd.
-          gh release create "$VERSION" \
-            --repo "${{ github.repository }}" \
-            --title "$VERSION" \
-            --generate-notes \
-            --verify-tag \
-            dist/*
+          if gh release view "$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $VERSION exists; uploading artifacts to it."
+            gh release upload "$VERSION" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              dist/*
+          else
+            # --verify-tag refuses to invent a tag that does not exist, so a
+            # mistyped workflow_dispatch input fails loudly rather than publishing
+            # something odd. --generate-notes builds the changelog from merged PRs.
+            echo "Release $VERSION does not exist; creating it."
+            gh release create "$VERSION" \
+              --repo "${{ github.repository }}" \
+              --title "$VERSION" \
+              --generate-notes \
+              --verify-tag \
+              dist/*
+          fi
+
+          echo "Assets now attached to $VERSION:"
+          gh release view "$VERSION" --repo "${{ github.repository }}" \
+            --json assets --jq '.assets[].name'
