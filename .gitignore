@@ -1,0 +1,13 @@
+# Built binaries.
+/bin/
+/dist/
+/.bin/
+
+# Test and coverage output.
+coverage.out
+*.test
+
+# Editor / OS noise.
+.DS_Store
+.idea/
+*.swp

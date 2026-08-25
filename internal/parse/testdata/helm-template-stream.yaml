@@ -1,0 +1,146 @@
+# A stream in the shape `helm template` produces: documents separated by `---`,
+# each preceded by a `# Source:` provenance comment.
+#
+# Contents are deliberately representative rather than minimal -- an XRD with both
+# names.kind and claimNames.kind, several Functions, an EnvironmentConfig, a
+# Composition whose inline template contains a `---` inside a block scalar, an
+# unrelated document that must be ignored, and the XR itself last.
+---
+# Source: example-chart/templates/xbucket_xrd.yaml
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xbuckets.platform.example.org
+spec:
+  group: platform.example.org
+  names:
+    kind: XBucket
+    plural: xbuckets
+  claimNames:
+    kind: BucketClaim
+    plural: bucketclaims
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                bucketName:
+                  type: string
+                region:
+                  type: string
+                  default: us-east-1
+                mode:
+                  type: string
+                  enum: [observe, manage]
+                  default: manage
+              required:
+                - bucketName
+---
+# Source: example-chart/templates/xbucket_comp.yaml
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xbuckets.platform.example.org
+spec:
+  compositeTypeRef:
+    apiVersion: platform.example.org/v1alpha1
+    kind: XBucket
+  mode: Pipeline
+  pipeline:
+    - step: load-environment
+      functionRef:
+        name: function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: example-environment
+    - step: create-resources
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          # The `---` below is data inside a block scalar, not a document
+          # separator. A line-oriented splitter corrupts this document.
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            ---
+            apiVersion: s3.aws.upbound.io/v1beta1
+            kind: Bucket
+            metadata:
+              annotations:
+                crossplane.io/composition-resource-name: bucket
+              name: {{ $spec.bucketName }}
+            spec:
+              forProvider:
+                region: {{ $spec.region }}
+              {{- if eq $spec.mode "observe" }}
+              managementPolicies: ["Observe"]
+              {{- end }}
+    - step: ready
+      functionRef:
+        name: function-auto-ready
+---
+# Source: example-chart/templates/environment.yaml
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: example-environment
+data:
+  region: us-east-1
+  accountId: "000000000000"
+---
+# Source: example-chart/templates/functions.yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-environment-configs
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-environment-configs:v0.5.0
+---
+# Source: example-chart/templates/functions.yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-go-templating
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.12.2
+---
+# Source: example-chart/templates/functions.yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-auto-ready
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-auto-ready:v0.5.1
+---
+# Source: example-chart/templates/unrelated.yaml
+# Not a render input. Must be classified Unknown and dropped, not routed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unrelated-config
+data:
+  key: value
+---
+# Source: example-chart/templates/xbucket.yaml
+apiVersion: platform.example.org/v1alpha1
+kind: XBucket
+metadata:
+  name: example-bucket
+spec:
+  bucketName: example-bucket
+  region: us-west-2
+  mode: manage

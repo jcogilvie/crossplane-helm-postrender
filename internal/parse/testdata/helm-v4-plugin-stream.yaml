@@ -1,0 +1,49 @@
+# A stream in the shape Helm v4 hands to a postrenderer/v1 plugin: documents
+# separated by a bare `---`, with NO `# Source:` comments. Provenance instead
+# arrives as a real annotation on each document.
+#
+# This is the shape that breaks naive splitters: with no marker to key on, a
+# line-oriented implementation cannot tell one document from the next.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xbuckets.platform.example.org
+  annotations:
+    postrenderer.helm.sh/postrender-filename: 'example-chart/templates/xbucket_comp.yaml'
+spec:
+  compositeTypeRef:
+    apiVersion: platform.example.org/v1alpha1
+    kind: XBucket
+  mode: Pipeline
+  pipeline:
+    - step: create-resources
+      functionRef:
+        name: function-go-templating
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-go-templating
+  annotations:
+    postrenderer.helm.sh/postrender-filename: 'example-chart/templates/functions.yaml'
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.12.2
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-auto-ready
+  annotations:
+    postrenderer.helm.sh/postrender-filename: 'example-chart/templates/functions.yaml'
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-auto-ready:v0.5.1
+---
+apiVersion: platform.example.org/v1alpha1
+kind: XBucket
+metadata:
+  name: example-bucket
+  annotations:
+    postrenderer.helm.sh/postrender-filename: 'example-chart/templates/xbucket.yaml'
+spec:
+  bucketName: example-bucket
+  region: us-west-2
