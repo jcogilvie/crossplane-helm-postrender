@@ -31,8 +31,10 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # v7 or newer is required: v6 rejects golangci-lint v2 version strings
+      # outright ("golangci-lint v2 is not supported by golangci-lint-action v6").
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           # The action caches on its own; setup-go already primed the module cache.
