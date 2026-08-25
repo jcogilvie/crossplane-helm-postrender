@@ -160,6 +160,138 @@ about production speedup -- the actual multiplier depends on how many
 streams a caller batches and how expensive their specific Functions are to
 start.
 
+## Container reuse: why it lives in the tool, not in charts
+
+Function-container startup is the dominant cost of a render -- far more than
+the render itself -- and Helm spawns a post-renderer process once per unit
+test, so a naive implementation pays that startup cost once per test in a
+suite. `--reuse-containers` (`internal/render/reuse.go`) exists to remove
+that, and its design has several decisions that are easy to "simplify" back
+into a worse shape if you don't know why they're there.
+
+### Why the annotations are injected by the tool, not written by hand in charts
+
+The crossplane CLI already supports container reuse, through two
+Function annotations (`render.crossplane.io/runtime-docker-name`,
+`render.crossplane.io/runtime-docker-cleanup: Orphan`) that a chart author can
+set by hand. The earliest version of this feature's documentation told users
+to do exactly that.
+
+That's the wrong owner for the decision. Container reuse is *this tool's*
+answer to *its own* problem: Helm's one-process-per-render contract forces
+`crossplane-postrender` to pay Function-startup cost on every invocation
+unless something makes containers outlive a single render. That's an
+implementation detail of how this post-renderer is invoked -- it has nothing
+to do with what a chart's Composition does. Requiring a chart author to
+hand-annotate every Function to opt into it, and to keep those annotations
+correct as Functions are added, renamed, or upgraded, pushes a local
+performance concern into the chart's own API. A chart that happens to get
+tested by `crossplane-postrender` shouldn't need to know that fact reflected
+in its templates, and a chart that stops being tested that way shouldn't need
+its annotations cleaned up either.
+
+`enableContainerReuse` derives the same annotations mechanically -- name from
+the Function's own name and package version, cleanup fixed at `Orphan` -- and
+applies them at render time, which means the decision to reuse containers is
+made once, by the flag, at the place that actually has the problem to solve.
+The one exception (`enableContainerReuse`'s early-continue when either
+annotation is already present) exists so an explicit choice in a chart still
+wins: reuse is opt-in by inference, not something that silently overrides an
+author's own annotation. If you're tempted to make this override-in-force
+instead, don't -- the point of leaving an explicit annotation alone is that
+someone put it there for a reason (custom cleanup semantics, a fixed name
+required by other tooling) that the derivation logic can't see.
+
+### Why the network is created on demand instead of being a documented prerequisite
+
+Without reuse, the render engine creates a throwaway Docker network per
+invocation and tears it down afterward -- correct behavior for a one-shot
+render, and it means a first-time user runs into zero Docker setup beyond
+having the daemon running at all.
+
+Reuse breaks that assumption: a container that's supposed to survive past the
+render that started it needs a network that also survives past that render,
+so the throwaway-per-invocation network can't be it. The earlier design
+handled this by documenting `docker network create crossplane-render` as a
+prerequisite step, on the theory that network lifecycle is the user's
+business. In practice that just relocated the same "reuse is this tool's
+problem" mistake from annotations to setup instructions -- and it produced a
+worse failure mode than a normal missing-prerequisite error: skip the step
+and the render fails deep inside container startup with `network ... not
+found`, which reads like a Docker installation problem, not a missing `docker
+network create` invocation three sections back in a README.
+
+`ensureNetwork` (`internal/render/reuse.go`) removes the step instead of
+documenting it better: it's called only when reuse is enabled, checks whether
+the network already exists with `docker network inspect`, and creates it if
+not, treating a concurrent "already exists" race as success rather than an
+error (because two suites reusing containers in parallel, and therefore
+racing to create the same network, is exactly the scenario reuse exists for).
+Do not turn this back into a documented manual step; the entire point is that
+a user enabling `--reuse-containers` needs to do nothing else.
+
+### Why the tool does not set `runtime-docker-network`
+
+`enableContainerReuse` sets the container-name and cleanup annotations but
+deliberately leaves `render.crossplane.io/runtime-docker-network` untouched.
+This looks like an oversight -- the other two reuse-relevant knobs are set,
+why not this one? -- but setting it would create exactly the class of bug
+this design otherwise avoids.
+
+The crossplane CLI's own render engine already injects that annotation from
+whichever network the engine itself joined for that render
+(`CrossplaneDockerNetwork` in `engine.go`'s `Setup` call). If
+`enableContainerReuse` also wrote a value for it, there would be two sources
+of truth for the same fact -- the engine's actual joined network, and
+whatever `enableContainerReuse` guessed independently -- with no mechanism
+keeping them equal. A future change to `--docker-network`, or to how the
+engine picks its network, could silently desync them.
+
+That failure mode is not hypothetical; it is the exact bug this design
+replaced. A mismatched (as opposed to missing) network annotation produces
+
+```
+cannot run Composition pipeline step "...": rpc error:
+  code = DeadlineExceeded desc = ... produced zero addresses
+```
+
+which reads like a broken Composition step, not a networking mismatch,
+because nothing about that error message points at Docker networking at all.
+A *missing* network at least fails with a legible `network ... not found`.
+Leaving the network annotation to the one place that actually knows the
+answer -- the engine's own `Setup` -- removes the second source of truth
+instead of trying to keep two sources in sync.
+
+### Why off by default
+
+`--reuse-containers` defaults to `false`. Reuse's whole mechanism is leaving
+containers running after the process that started them exits -- which is
+correct for a test suite invoking this post-renderer dozens of times, but a
+surprising side effect for someone running one `helm template` command who
+never asked for background containers left on their machine. Defaulting to
+on would optimize for the repeated-invocation case at the cost of surprising
+the single-invocation case, silently. Requiring an explicit flag means the
+tradeoff (faster subsequent renders, in exchange for state left behind you
+must clean up) is something a user opts into deliberately, not something they
+discover later by finding containers they don't remember starting.
+
+### Why the reuse suffix is shared by default
+
+`DefaultReuseSuffix` is a fixed literal (`"render"`), not something derived
+per-project (a working-directory hash, a repo name, anything unique). That's
+deliberate, not a missed opportunity for isolation: a Function container is a
+stateless gRPC server keyed entirely by its image -- it holds no
+project-specific state between calls, so two unrelated projects reusing the
+*same* container for the *same* Function image is strictly a win for
+whichever one starts second, not a correctness risk. Making the default
+project-specific would turn every second project on a machine into a cold
+start, for no safety benefit, since there's nothing to isolate.
+
+`--reuse-suffix` exists for the case where sharing is unwanted for other
+reasons (e.g. wanting to force a distinct container per project regardless of
+image identity) -- but that's an explicit opt-out a user reaches for, not the
+default anyone should need to protect themselves from.
+
 ## Behaviors worth preserving
 
 Each of these was discovered by diffing this tool's output against
