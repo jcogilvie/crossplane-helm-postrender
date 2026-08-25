@@ -38,24 +38,39 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
-// Kubernetes kinds that route a document to a specific render input.
-const (
-	kindComposition = "Composition"
-	kindFunction    = "Function"
-	kindXRD         = "CompositeResourceDefinition"
-	kindEnvConfig   = "EnvironmentConfig"
-)
+// The routing tables below are package vars only because Go has no const map.
+// Each is written once here and never mutated.
 
-// Annotations that let a test inject synthetic render inputs.
+// classByKind routes a document by its Kubernetes kind. Supporting a new kind is
+// a line here rather than another arm in a switch.
 //
-// testObserved routes a manifest to --observed-resources, so tests can supply
-// composed-resource status (e.g. to exercise branches guarded by
-// getComposedResource). testExtraResource routes to --extra-resources, so
-// go-templating ExtraResources requirements resolve against synthetic objects.
-const (
-	annotationTestObserved      = "crossplane.io/test-observed"
-	annotationTestExtraResource = "crossplane.io/test-extra-resource"
-)
+// The XR is deliberately absent: it is identified by API group, because its kind
+// is composition-specific and cannot be known in advance.
+//
+//nolint:gochecknoglobals // immutable lookup table; Go has no const map
+var classByKind = map[string]Class{
+	"Composition":                 ClassComposition,
+	"Function":                    ClassFunction,
+	"CompositeResourceDefinition": ClassXRD,
+	"EnvironmentConfig":           ClassEnvironmentConfig,
+}
+
+// classByAnnotation routes a document carrying a test-injection annotation set to
+// "true", which lets a test supply synthetic render inputs.
+//
+// test-observed reaches --observed-resources, so a test can supply
+// composed-resource status -- to exercise a branch guarded by getComposedResource,
+// for instance. test-extra-resource reaches --extra-resources, so go-templating
+// ExtraResources requirements resolve against synthetic objects.
+//
+// Iteration order is unspecified, which is fine here: a document is only ever
+// expected to carry one of these.
+//
+//nolint:gochecknoglobals // immutable lookup table; Go has no const map
+var classByAnnotation = map[string]Class{
+	"crossplane.io/test-observed":       ClassObserved,
+	"crossplane.io/test-extra-resource": ClassExtraResource,
+}
 
 // Class identifies which render input a document belongs to.
 type Class int
@@ -75,28 +90,27 @@ const (
 	ClassExtraResource
 )
 
-// String returns the class name, for logs and test failure messages.
+// className gives each class a name for logs and test failure messages. A map
+// rather than a switch, so an unnamed class needs no separate default arm.
+//
+//nolint:gochecknoglobals // immutable lookup table; Go has no const map
+var className = map[Class]string{
+	ClassUnknown:           "Unknown",
+	ClassXR:                "XR",
+	ClassComposition:       "Composition",
+	ClassFunction:          "Function",
+	ClassXRD:               "XRD",
+	ClassEnvironmentConfig: "EnvironmentConfig",
+	ClassObserved:          "Observed",
+	ClassExtraResource:     "ExtraResource",
+}
+
+// String returns the class name, or "Unknown" for a class with no name.
 func (c Class) String() string {
-	switch c {
-	case ClassXR:
-		return "XR"
-	case ClassComposition:
-		return "Composition"
-	case ClassFunction:
-		return "Function"
-	case ClassXRD:
-		return "XRD"
-	case ClassEnvironmentConfig:
-		return "EnvironmentConfig"
-	case ClassObserved:
-		return "Observed"
-	case ClassExtraResource:
-		return "ExtraResource"
-	case ClassUnknown:
-		return "Unknown"
-	default:
-		return "Unknown"
+	if s, ok := className[c]; ok {
+		return s
 	}
+	return "Unknown"
 }
 
 // Document is one parsed YAML document plus the provenance we can recover for
@@ -301,27 +315,17 @@ func classify(d rawDoc, o Options) Document {
 		}
 	}
 
-	if isTruthyAnnotation(obj, annotationTestObserved) {
-		out.Class = ClassObserved
-		return out
-	}
-	if isTruthyAnnotation(obj, annotationTestExtraResource) {
-		out.Class = ClassExtraResource
-		return out
+	// Annotations first: an annotated XR-shaped document must land in the
+	// observed/extra-resources bucket rather than overwrite the XR being rendered.
+	for annotation, class := range classByAnnotation {
+		if isTruthyAnnotation(obj, annotation) {
+			out.Class = class
+			return out
+		}
 	}
 
-	switch obj.GetKind() {
-	case kindComposition:
-		out.Class = ClassComposition
-		return out
-	case kindFunction:
-		out.Class = ClassFunction
-		return out
-	case kindXRD:
-		out.Class = ClassXRD
-		return out
-	case kindEnvConfig:
-		out.Class = ClassEnvironmentConfig
+	if class, ok := classByKind[obj.GetKind()]; ok {
+		out.Class = class
 		return out
 	}
 

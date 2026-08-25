@@ -197,38 +197,32 @@ func (e *engineRenderer) prepare(s *parse.Stream, apiGroupDomain string) (*compo
 		return nil, err
 	}
 
-	xr, err := compositeFrom(s.XR)
-	if err != nil {
-		return nil, err
-	}
+	// The decodes are written as expressions against a shared decoder, which
+	// accumulates the first error and makes later calls no-ops, so this reads as a
+	// description of the render inputs instead of five repetitions of
+	// `x, err := ...; if err != nil { return nil, err }`. Checked once below.
+	//
+	// Sound only because these decodes are independent: none consumes a value
+	// another produces. The XRD step further down is deliberately left out for
+	// exactly that reason -- it needs the decoded XR, and it mutates it.
+	var d decoder
 
-	comp, err := compositionFrom(s.Composition)
-	if err != nil {
-		return nil, err
-	}
-
-	fns, err := functionsFrom(s.Functions)
-	if err != nil {
-		return nil, err
-	}
-
-	observed, err := observedFrom(s.Observed)
-	if err != nil {
-		return nil, err
-	}
-
-	required, err := unstructuredFrom(s.EnvironmentConfigs)
-	if err != nil {
-		return nil, err
-	}
-
+	fns := decodeEach(&d, s.Functions, "Function", zeroOf[pkgv1.Function])
 	in := render.CompositionInputs{
-		CompositeResource:   xr,
-		Composition:         comp,
+		CompositeResource:   decodeOne(&d, s.XR, "composite resource", newComposite),
+		Composition:         decodeOne(&d, s.Composition, "Composition", zeroOf[apiextensionsv1.Composition]),
 		FunctionCredentials: []corev1.Secret{},
-		ObservedResources:   observed,
-		RequiredResources:   required,
+		ObservedResources:   decodeEach(&d, s.Observed, "observed resource", newComposed),
+		// Reuses the objects the classifier already parsed rather than decoding
+		// them again.
+		RequiredResources: objectsOf(s.EnvironmentConfigs),
 	}
+
+	if d.err != nil {
+		return nil, d.err
+	}
+
+	xr := in.CompositeResource
 
 	// The XRD does two distinct jobs, and both are required.
 	//
@@ -241,8 +235,13 @@ func (e *engineRenderer) prepare(s *parse.Stream, apiGroupDomain string) (*compo
 	//
 	// Omitting the XRD entirely when none matches is correct and matches
 	// `crossplane render` invoked without --xrd: the engine falls back to Modern.
+	//
+	// Typed decoding is unavoidable here, since ApplyXRDDefaults needs it to derive
+	// the CRD schema -- even though *matching* uses unstructured accessors, because
+	// the apiserver round-trips XRDs through v1<->v2 conversion and a document's
+	// own apiVersion cannot be trusted.
 	if xrdDoc := parse.MatchXRD(s.XR.Object, s.XRDs); xrdDoc != nil {
-		xrd, err := xrdFrom(xrdDoc)
+		xrd, err := decodeDocument(xrdDoc, "XRD", zeroOf[apiextensionsv1.CompositeResourceDefinition])
 		if err != nil {
 			return nil, err
 		}
@@ -361,61 +360,70 @@ func decodeDocuments[T any](docs []parse.Document, what string, newT func() *T) 
 	return out, nil
 }
 
-// zeroOf adapts a plain struct type to decodeDocument's constructor parameter.
-func zeroOf[T any]() *T { return new(T) }
-
-// compositeFrom decodes the XR. composite.New initialises the embedded Object
-// map, which unmarshalling requires.
-func compositeFrom(d *parse.Document) (*ucomposite.Unstructured, error) {
-	return decodeDocument(d, "composite resource", func() *ucomposite.Unstructured {
-		return ucomposite.New()
-	})
-}
-
-// xrdFrom decodes an XRD into its typed form, which ApplyXRDDefaults requires in
-// order to derive the CRD schema.
+// Constructors for the decode target types.
 //
-// Note this is the one place a typed XRD decode is unavoidable. Matching still
-// uses unstructured accessors, because the apiserver round-trips XRDs through
-// v1<->v2 conversion and the document's own apiVersion cannot be trusted.
-func xrdFrom(d *parse.Document) (*apiextensionsv1.CompositeResourceDefinition, error) {
-	return decodeDocument(d, "XRD", zeroOf[apiextensionsv1.CompositeResourceDefinition])
-}
+// zeroOf covers plain structs. composite.New and composed.New cannot be passed
+// directly -- they are `func(opts ...Option) *T`, which does not satisfy
+// `func() *T` -- so they are wrapped. They are needed at all because they
+// initialise the embedded Object map, and unmarshalling into an uninitialised one
+// fails.
+func zeroOf[T any]() *T                      { return new(T) }
+func newComposite() *ucomposite.Unstructured { return ucomposite.New() }
+func newComposed() *composed.Unstructured    { return composed.New() }
 
-// compositionFrom decodes the Composition into its typed form, which the engine
-// requires (unlike the other inputs, it is not passed as unstructured).
-func compositionFrom(d *parse.Document) (*apiextensionsv1.Composition, error) {
-	return decodeDocument(d, "Composition", zeroOf[apiextensionsv1.Composition])
-}
-
-// functionsFrom decodes Function packages.
+// decoder accumulates the first decode error so a group of independent decodes
+// can be written as expressions and checked once, rather than each one being
+// interrupted by its own `if err != nil`.
 //
-// A v1beta1 Function decodes into the v1 type without loss: both FunctionSpecs
-// are structurally identical, embedding only PackageSpec and PackageRuntimeSpec.
-// The CLI's own LoadFunctions accepts both apiVersions for the same reason.
-func functionsFrom(docs []parse.Document) ([]pkgv1.Function, error) {
-	return decodeDocuments(docs, "Function", zeroOf[pkgv1.Function])
+// It deliberately keeps the *first* error rather than the last: later decodes are
+// no-ops once one has failed, so a subsequent error would be less informative,
+// not more. Only sound for decodes that do not depend on each other's results.
+type decoder struct {
+	err error
 }
 
-// observedFrom decodes test-injected observed composed resources. composed.New
-// initialises the embedded Object map, which unmarshalling requires.
-func observedFrom(docs []parse.Document) ([]composed.Unstructured, error) {
-	return decodeDocuments(docs, "observed resource", func() *composed.Unstructured {
-		return composed.New()
-	})
+// decodeOne decodes a single document, or returns nil if the decoder has already
+// failed.
+func decodeOne[T any](d *decoder, doc *parse.Document, what string, newT func() *T) *T {
+	if d.err != nil {
+		return nil
+	}
+	out, err := decodeDocument(doc, what, newT)
+	if err != nil {
+		d.err = err
+		return nil
+	}
+	return out
 }
 
-// unstructuredFrom collects already-parsed documents for the required-resources
-// input, reusing the objects the classifier produced rather than re-decoding.
-func unstructuredFrom(docs []parse.Document) ([]unstructured.Unstructured, error) {
+// decodeEach decodes every document in a slice, or returns nil if the decoder has
+// already failed.
+//
+// Note for Functions specifically: a v1beta1 Function decodes into the v1 type
+// without loss, since both FunctionSpecs are structurally identical, embedding
+// only PackageSpec and PackageRuntimeSpec. The CLI's own LoadFunctions accepts
+// both apiVersions for the same reason.
+func decodeEach[T any](d *decoder, docs []parse.Document, what string, newT func() *T) []T {
+	if d.err != nil {
+		return nil
+	}
+	out, err := decodeDocuments(docs, what, newT)
+	if err != nil {
+		d.err = err
+		return nil
+	}
+	return out
+}
+
+// objectsOf collects the objects the classifier already parsed, without decoding
+// again. Every document the classifier routed to a bucket other than Unknown has
+// a non-nil Object by construction, so there is nothing to fail here.
+func objectsOf(docs []parse.Document) []unstructured.Unstructured {
 	out := make([]unstructured.Unstructured, 0, len(docs))
 	for i := range docs {
-		if docs[i].Object == nil {
-			return nil, errors.Errorf("cannot use unparsed document from %s as a required resource", sourceOf(&docs[i]))
-		}
 		out = append(out, *docs[i].Object)
 	}
-	return out, nil
+	return out
 }
 
 // sourceOf names a document for error messages, preferring its template path and
