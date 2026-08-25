@@ -41,30 +41,14 @@ manual `go build ./cmd/crossplane-postrender`) is the supported path.
 - **Docker.** The render engine executes each Crossplane Function as a real
   container -- there is no mocked or in-memory function runtime. Without a
   running Docker daemon, rendering fails.
-- **A Docker network for the render engine to join.** Create it once, before
-  running any render:
-
-  ```bash
-  docker network create crossplane-render
-  ```
-
-  `crossplane-postrender` tells the render engine which network to join rather than
-  letting it create a per-invocation one, so the network must already exist. The
-  default name is `crossplane-render`; override it with `--docker-network` (see
-  [Configuration](#configuration)).
-
-  Note the network default is deliberately named after the *render engine*, not
-  after this binary: the network is shared with the crossplane render engine and
-  its function containers, and any containers left behind by a previous render are
-  attached to it. Keeping the name stable is what lets those containers be reused.
-
-  This also matters for reuse. Since crossplane CLI v2.4.0, an engine that sees a
-  `render.crossplane.io/runtime-docker-network` annotation on a Function joins
-  that network instead of creating one -- and consequently stops creating it. If
-  you annotate your Functions that way (see
-  [Reusing function containers](#reusing-function-containers)), point
-  `--docker-network` at the same network so the engine and the reused containers
-  can reach each other.
+- **No network setup needed.** `crossplane-postrender` manages the Docker
+  network itself: by default it lets the render engine create a throwaway
+  network per invocation and remove it afterwards, so a one-shot render needs
+  nothing pre-created. Pass `--reuse-containers` (see
+  [Reusing function containers](#reusing-function-containers)) and it instead
+  joins a persistent named network, creating it on demand if it doesn't
+  already exist. Set `--docker-network` only if you want it to join a network
+  you manage yourself (see [Configuration](#configuration)).
 - **No `crossplane` CLI install required.** `crossplane-postrender` drives the
   crossplane CLI's render packages in-process (as a Go library dependency),
   rather than shelling out to a `crossplane` binary. There's nothing to
@@ -76,8 +60,6 @@ Given a chart `example-chart` whose templates render an XRD, a Composition, a
 Function package, and an `XBucket` XR with API group `platform.example.org`:
 
 ```bash
-docker network create crossplane-render   # once, if it doesn't already exist
-
 helm template example-chart ./example-chart \
   --post-renderer crossplane-postrender \
   --post-renderer-args platform.example.org
@@ -177,7 +159,9 @@ produced, not against the XR the chart declared.
 | --- | --- | --- | --- |
 | `<api-group-domain>` (positional, required) | -- | -- | Identifies which document in the stream is the XR to render: any document whose `apiVersion` contains this substring. |
 | `--crossplane-version` | `CROSSPLANE_RENDER_VERSION` | `v2.4.0` | Pins the crossplane render-engine image. Left unset it would silently track "latest stable," which would let render behavior drift between runs without you asking for it. |
-| `--docker-network` | `CROSSPLANE_DOCKER_NETWORK` | `crossplane-render` | The Docker network the render engine and its Function containers join. Must already exist (see [Prerequisites](#prerequisites)). |
+| `--docker-network` | `CROSSPLANE_DOCKER_NETWORK` | none; `crossplane-render` under `--reuse-containers` | The Docker network the render engine and its Function containers join. Left empty, the engine creates and removes a throwaway network per invocation. Under `--reuse-containers` it defaults to `crossplane-render` instead, created on demand if it doesn't exist, because reused containers must outlive the render that started them. Set this only to join a network you manage yourself. |
+| `--reuse-containers` | `CROSSPLANE_REUSE_CONTAINERS` | `false` | Leave Function containers running and reuse them on the next render, instead of starting fresh ones every time. See [Reusing function containers](#reusing-function-containers). Off by default -- leaving containers running is a surprising side effect for a single render. |
+| `--reuse-suffix` | `CROSSPLANE_REUSE_SUFFIX` | `render` | Distinguishes this project's reusable containers from another's. The default is shared on purpose (see [Reusing function containers](#reusing-function-containers)); pass your own suffix to opt out of sharing. Ignored unless `--reuse-containers` is set. |
 | `-v`, `--verbose` | `CROSSPLANE_RENDER_VERBOSE` | `false` | Log render diagnostics to stderr. Never to stdout -- that stream is the manifest output Helm parses, and anything extra written there would corrupt it. |
 | `-V`, `--version` | -- | -- | Print the tool's version and exit. |
 
@@ -240,45 +224,60 @@ re-parse.
 Every render starts the Composition's Functions as containers, and starting them
 is the dominant cost -- far more than the render itself. Since Helm spawns a
 post-renderer process per unit test, a suite pays that cost once per test unless
-the containers survive between invocations.
+the containers survive between invocations. Measured on the same input, warm
+reused containers render in ~1.57s versus ~2.45s without reuse -- roughly 1.6x,
+and it compounds across every test in a suite.
 
-They can. Annotate each Function in your chart with a stable container name, an
-`Orphan` cleanup policy, and the network `--docker-network` points at:
+Turn it on with `--reuse-containers`, passed as an additional
+`--post-renderer-args` alongside the required domain argument (Helm accepts
+that flag more than once, appending each value to the post-renderer's
+argument list):
 
-```yaml
-apiVersion: pkg.crossplane.io/v1
-kind: Function
-metadata:
-  name: function-go-templating
-  annotations:
-    render.crossplane.io/runtime-docker-name: function-go-templating-render
-    render.crossplane.io/runtime-docker-cleanup: Orphan
-    render.crossplane.io/runtime-docker-network: crossplane-render
-spec:
-  package: xpkg.crossplane.io/crossplane-contrib/function-go-templating:v0.12.2
+```bash
+helm template example-chart ./example-chart \
+  --post-renderer crossplane-postrender \
+  --post-renderer-args platform.example.org \
+  --post-renderer-args --reuse-containers
 ```
 
-`Orphan` leaves the container running when a render finishes, and the stable name
-lets the next render find and reuse it rather than starting a fresh one. This is
-the single largest lever on suite wall-clock time.
+Or set the environment variable once, so every invocation in a test run picks
+it up without threading it through `--post-renderer-args` at all:
 
-**The annotation and `--docker-network` must name the same network.** If they
-disagree, the engine joins one network while the reusable containers sit on
-another, and the failure is indirect enough to be hard to place:
-
-```
-cannot run Composition pipeline step "...": rpc error:
-  code = DeadlineExceeded desc = ... produced zero addresses
+```bash
+export CROSSPLANE_REUSE_CONTAINERS=true
 ```
 
-That is the engine failing to resolve a Function it cannot reach — not a problem
-with the Composition. A missing network is clearer (`network ... not found`), but
-a *mismatched* one produces the message above. If you see it, check both names
-agree before looking anywhere else.
+**Your chart needs no annotations for this.** `crossplane-postrender` does the
+following on your behalf, for every Function in the stream:
 
-Containers left running this way are yours to clean up. Note the filter matches
-whatever suffix your `runtime-docker-name` annotations use, so adjust it —
-and be deliberate, since removing them forfeits the reuse they exist for:
+- Derives a stable container name from the Function's name and package
+  version, in the form `<function-name>-<package-version>-<suffix>` -- for
+  example `function-go-templating-v0.12.2-render`. The package version is
+  included so upgrading a Function starts a fresh container instead of
+  silently reusing one running the old image. A digest reference
+  (`...@sha256:abc123`) keeps its algorithm, so two digests differing only in
+  algorithm can't collide. The name is sanitized to what Docker accepts.
+- Sets `Orphan` cleanup, so the container survives after the render finishes
+  instead of being torn down.
+- Creates the Docker network the reused containers run on
+  (`crossplane-render` by default, or whatever `--docker-network` names) if it
+  doesn't already exist -- there's nothing to pre-create yourself.
+
+**A Function that already carries a `render.crossplane.io/runtime-docker-name`
+or `render.crossplane.io/runtime-docker-cleanup` annotation is left completely
+alone.** If your chart sets either one by hand, that explicit choice wins over
+the derived one, all-or-nothing per Function.
+
+Use `--reuse-suffix` (or `CROSSPLANE_REUSE_SUFFIX`) to change the suffix in the
+derived name from its default, `render`. The default is shared on purpose:
+Function containers are stateless gRPC servers keyed only by image, so two
+projects reusing each other's containers is a feature -- whichever one starts
+second gets an instant warm start instead of paying container startup again.
+Pass your own suffix if you don't want that sharing.
+
+Containers left running this way are yours to clean up. Filter on whatever
+suffix you're using (`render` unless you set `--reuse-suffix`), inspect before
+removing, and be deliberate -- removing them forfeits the reuse they exist for:
 
 ```bash
 # Inspect first.
@@ -317,13 +316,12 @@ docker ps -aq --filter 'name=-render' | xargs -r docker rm -f
   misclassified document (for instance, an XR whose `apiVersion` doesn't
   actually contain the domain you passed) fails as "no XR found" rather than
   "found this input but ignored it."
-- **Container reuse requires opting in per Function.** Reusing Function
-  containers across renders (the difference between a test suite that takes
-  minutes and one that takes an hour) requires annotating each `Function`
-  manifest with a stable `render.crossplane.io/runtime-docker-name` and
-  `render.crossplane.io/runtime-docker-cleanup: Orphan`. `crossplane-postrender`
-  does not add these annotations for you; they belong on the Function
-  manifests your chart templates.
+- **Container reuse is opt-in, and leaves containers running until you clean
+  them up.** `--reuse-containers` is off by default specifically because
+  leaving containers behind is a surprising side effect for a single render.
+  Once enabled, containers persist across invocations until you remove them
+  yourself -- see [Reusing function containers](#reusing-function-containers)
+  for the cleanup snippet.
 
 ## Contributing
 

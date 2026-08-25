@@ -8,10 +8,10 @@ MODULE      := github.com/jcogilvie/crossplane-helm-postrender
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo devel)
 LDFLAGS     := -s -w -X $(MODULE)/internal/version.version=$(VERSION)
 
-# The Docker network the render engine and function containers share. It must
-# exist before a render: since crossplane CLI v2.4.0 the engine joins a network
-# named by annotation rather than creating one.
-NETWORK     ?= crossplane-render
+# Used when --reuse-containers is set. Nothing needs to create the network -- the
+# renderer does so on demand -- but both names are needed by clean-containers.
+NETWORK       ?= crossplane-render
+REUSE_SUFFIX  ?= render
 
 .PHONY: help
 help: ## Show this help
@@ -50,14 +50,18 @@ fmt: ## Format the code
 tidy: ## Tidy go.mod/go.sum
 	go mod tidy
 
-.PHONY: network
-network: ## Create the shared Docker network (idempotent)
-	@docker network inspect $(NETWORK) >/dev/null 2>&1 \
-		|| docker network create $(NETWORK)
-
 .PHONY: reviewable
 reviewable: tidy fmt lint test ## Everything CI checks, before opening a PR
 
 .PHONY: clean
 clean: ## Remove build and coverage output
 	rm -rf $(BIN_DIR) dist coverage.out
+
+# Reused containers are left running deliberately -- that is what makes the next
+# render fast -- so removing them is opt-in and forfeits that. Inspect first.
+.PHONY: clean-containers
+clean-containers: ## Remove reusable Function containers and their network
+	@echo "Removing:"
+	@docker ps -a --filter 'name=-$(REUSE_SUFFIX)' --format '  {{.Names}}\t{{.Status}}' || true
+	@docker ps -aq --filter 'name=-$(REUSE_SUFFIX)' | xargs -r docker rm -f >/dev/null
+	@docker network rm $(NETWORK) 2>/dev/null || true

@@ -129,13 +129,9 @@ main() {
 
     log "installed ${BINARY} ${version} to ${target}"
 
-    # A post-renderer is invoked by Helm rather than typed by a human, so point at
-    # the two things that most often go wrong on first use.
-    if ! docker network inspect crossplane-render >/dev/null 2>&1; then
-        log
-        log "note: the shared Docker network does not exist yet. Create it once with:"
-        log "  docker network create crossplane-render"
-    fi
+    # Nothing else to set up: the renderer manages its own Docker network, creating
+    # a persistent one on demand under --reuse-containers and a throwaway one
+    # otherwise. Docker itself does need to be running.
 }
 
 main "$@"

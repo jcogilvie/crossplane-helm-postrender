@@ -51,21 +51,17 @@ import (
 // runs. Override with --crossplane-version to track a different release.
 const DefaultCrossplaneVersion = "v2.4.0"
 
-// DefaultDockerNetwork is the Docker network the render engine and function
-// containers attach to.
+// ReuseDockerNetwork is the Docker network used when container reuse is enabled.
 //
-// A stable, shared network is what makes container reuse possible. Annotate
-// Functions with a stable render.crossplane.io/runtime-docker-name and
-// runtime-docker-cleanup: Orphan, and their containers survive between renders
-// for later invocations to reuse -- the difference between a test suite taking
-// minutes and taking an hour.
+// Reused containers must outlive the render that started them, so they cannot live
+// on the throwaway network the engine creates and deletes per invocation -- the
+// next render would find the containers attached to a network that no longer
+// exists. A stable named network is therefore part of reuse, not a separate thing
+// to configure, and is created on demand.
 //
-// Since crossplane CLI v2.4.0, an engine that sees a runtime-docker-network
-// annotation joins that network rather than creating its own, and consequently no
-// longer creates it. The network must therefore already exist:
-//
-//	docker network create crossplane-render
-const DefaultDockerNetwork = "crossplane-render"
+// Without reuse, no network is named at all: the engine creates a per-invocation
+// one and cleans it up, which is the right behaviour for a single render.
+const ReuseDockerNetwork = "crossplane-render"
 
 // Options configures a Renderer.
 type Options struct {
@@ -73,9 +69,28 @@ type Options struct {
 	// DefaultCrossplaneVersion when empty.
 	CrossplaneVersion string
 
-	// DockerNetwork is the network the render engine joins. Defaults to
-	// DefaultDockerNetwork, so reused function containers stay reachable.
+	// DockerNetwork is the network the render engine joins.
+	//
+	// Left empty, the engine creates a throwaway network per invocation and
+	// removes it afterwards -- except under ReuseContainers, which needs a network
+	// that outlives the render and so defaults to ReuseDockerNetwork. Set this only
+	// to join a network you manage yourself.
 	DockerNetwork string
+
+	// ReuseContainers leaves Function containers running between renders and
+	// finds them again on the next one, which is the difference between a test
+	// suite taking minutes and taking an hour. Off by default: leaving containers
+	// running is a surprising side effect for a single render.
+	//
+	// See enableContainerReuse for why this belongs here rather than in the
+	// annotations of everyone's chart.
+	ReuseContainers bool
+
+	// ReuseSuffix distinguishes this project's reusable containers from another's.
+	// Defaults to DefaultReuseSuffix, which is shared on purpose -- Function
+	// containers are stateless and keyed by image, so sharing them across projects
+	// is a feature. Set it to opt out of that. Ignored unless ReuseContainers.
+	ReuseSuffix string
 
 	// Logger receives render diagnostics. Defaults to a no-op logger.
 	Logger logging.Logger
@@ -152,8 +167,10 @@ func (o Options) withDefaults() Options {
 	if o.CrossplaneVersion == "" {
 		o.CrossplaneVersion = DefaultCrossplaneVersion
 	}
-	if o.DockerNetwork == "" {
-		o.DockerNetwork = DefaultDockerNetwork
+	// Only reuse needs a named network. Left empty otherwise, so the engine creates
+	// and cleans up its own -- nothing for a one-shot caller to set up.
+	if o.DockerNetwork == "" && o.ReuseContainers {
+		o.DockerNetwork = ReuseDockerNetwork
 	}
 	if o.Logger == nil {
 		o.Logger = logging.NewNopLogger()

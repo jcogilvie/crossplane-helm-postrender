@@ -57,6 +57,12 @@ type cli struct {
 	DockerNetwork     string `env:"CROSSPLANE_DOCKER_NETWORK" help:"Docker network the render engine joins."      name:"docker-network"`
 	Verbose           bool   `env:"CROSSPLANE_RENDER_VERBOSE" help:"Log render diagnostics to stderr."            short:"v"`
 
+	// One knob for container reuse -- no chart annotations, no per-Function
+	// bookkeeping. Off by default, because leaving containers running is a
+	// surprising side effect for someone rendering once.
+	ReuseContainers bool   `env:"CROSSPLANE_REUSE_CONTAINERS" help:"Leave Function containers running and reuse them next render. Much faster over many renders; leaves containers behind." name:"reuse-containers"`
+	ReuseSuffix     string `env:"CROSSPLANE_REUSE_SUFFIX"     help:"Distinguishes this project's reusable containers. Defaults to a shared value, so projects reuse each other's."          name:"reuse-suffix"`
+
 	// Stdin and Stdout are the streams Run reads and writes. They are fields,
 	// not hardcoded os.Stdin/os.Stdout, so Run is testable; both default when
 	// nil. kong:"-" keeps them off the command line.
@@ -101,6 +107,8 @@ func (c *cli) Run() error {
 	r := render.NewRenderer(render.Options{
 		CrossplaneVersion: c.CrossplaneVersion,
 		DockerNetwork:     c.DockerNetwork,
+		ReuseContainers:   c.ReuseContainers,
+		ReuseSuffix:       c.ReuseSuffix,
 		Logger:            log,
 	})
 

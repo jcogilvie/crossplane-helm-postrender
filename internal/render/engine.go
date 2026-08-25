@@ -116,9 +116,28 @@ func (e *engineRenderer) RenderAll(ctx context.Context, streams []*parse.Stream,
 		return results, errs
 	}
 
+	// Deduped once and reused: Setup and startRuntimes must see the same Function
+	// values, and reuse annotations applied to one copy would not show up in
+	// another.
+	fns := dedupeFunctions(allFns)
+
+	// Before Setup, which is where containers are created.
+	if e.o.ReuseContainers {
+		// The network has to exist first: reused containers outlive the render, so
+		// they cannot use the throwaway network the engine would otherwise manage,
+		// and the engine will not create one it was told to join.
+		if err := ensureNetwork(ctx, e.o.DockerNetwork); err != nil {
+			return results, fillRemaining(errs, prepared, err)
+		}
+		if err := enableContainerReuse(fns, e.o.ReuseSuffix); err != nil {
+			return results, fillRemaining(errs, prepared,
+				errors.Wrap(err, "cannot enable function container reuse"))
+		}
+	}
+
 	eng := e.newEngine()
 
-	cleanup, err := eng.Setup(ctx, dedupeFunctions(allFns))
+	cleanup, err := eng.Setup(ctx, fns)
 	if err != nil {
 		return results, fillRemaining(errs, prepared, errors.Wrap(err, "cannot set up render engine"))
 	}
@@ -126,7 +145,7 @@ func (e *engineRenderer) RenderAll(ctx context.Context, streams []*parse.Stream,
 		defer cleanup()
 	}
 
-	addrs, err := e.startRuntimes(ctx, dedupeFunctions(allFns))
+	addrs, err := e.startRuntimes(ctx, fns)
 	if err != nil {
 		return results, fillRemaining(errs, prepared, errors.Wrap(err, "cannot start function runtimes"))
 	}
